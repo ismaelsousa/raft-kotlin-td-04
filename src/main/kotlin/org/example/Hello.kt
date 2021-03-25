@@ -13,7 +13,7 @@ fun main(args: Array<String>) {
         val listener = BusSocket()
 
         // Connect
-        listener.bind(args[0]) // My IP
+        listener.bind(args[0]) // My IP ex.: tcp://*:4001
 
         sender.connect(args[1]) // Other IP
         sender.connect(args[2]) // Other IP
@@ -31,40 +31,46 @@ fun main(args: Array<String>) {
 
         var firstTime = true
 
-        var cancelledElection = false
-
-
         val printjob = GlobalScope.launch {
+            var ft = true;
             while(true){
+                if(ft){
+                    ft = false
+                    delay(10000)
+                }else{
+                    delay(1000)
+                }
+                if(states == "Leader"){
+                    myLeader = ""
+                }
                 println("===================================")
                 println("Node = ${args[0]}")
                 println("Term = ${term}")
                 println("Leader = ${myLeader}")
                 println("===================================")
                 println("")
-                delay(1000)
+
             }
         }
 
 
         fun updateTermAndStartElection(){
-            println("entrou aqui -------------------------------------")
+            println("inciou eleição -------------------------------------")
             // Change state
             states="Candidate"
             term+=1
             votes+=1
             sender.send("request_vote $term ${args[0]}")
+
             GlobalScope.launch {
-                delay(100L)
-                if(votes>1){
-                    cancelledElection=true
+                delay(310L)
+                if(votes>=2){
                     states="Leader"
                     votes=0
-
                     println("Sou Novo Leader ${args[0]}")
                     while(true){
                         sender.send("heart-beat ${term} ${args[0]}")
-                        delay(50)
+                        delay(100)
                     }
 
                 }else{
@@ -74,24 +80,24 @@ fun main(args: Array<String>) {
             }
         }
 
-         GlobalScope.launch {
-            val timer= Random.nextLong(150,300)
-            println("2 === $timer")
-            delay(timer)
-            updateTermAndStartElection()
-        }
-
-        fun getElectionJob (): Job {
+        fun getElectionJob (): Job { // Timer
             val electionStart = if(firstTime) GlobalScope.launch{
                 firstTime = false
-                val timer= Random.nextLong(10000,15000) // tempo do terceiro iniciar
-                println(timer)
+                var server = args[0].split(":")[2]
+                if(server == "4001"){
+                    delay(5000)
+                }else if(server == "4002"){
+                    delay(2500)
+                }else if(server == "4003"){
+                    delay(0)
+                }
+
+                val timer= Random.nextLong(150,300)
                 delay(timer)
                 updateTermAndStartElection()
 
             } else GlobalScope.launch {
-                val timer= Random.nextLong(150,5000)
-                println("2 === $timer")
+                val timer= Random.nextLong(150,300)
                 delay(timer)
                 updateTermAndStartElection()
             }
@@ -101,74 +107,68 @@ fun main(args: Array<String>) {
 
 
         val listenToMessageJob = GlobalScope.launch {
-           var electionStart = getElectionJob()
+
 
 
 
             while (true) {
+                var electionStart = getElectionJob() // iniciar timer
 
 
-                if(cancelledElection){
+
+                if(states == "Leader" || states == "Candidate"){
                     electionStart.cancelAndJoin()
                 }
-
-
+                //Hearth-beat, vote and request_vote
                 val message = listener.recvString()
-                println("recebeu $message")
+
+                println("\n recebeu $message \n")
+
                 // Reset time when message come in
                 electionStart.cancelAndJoin()
 
 
-                //println("listening  - ${listener.recvString()}")
-
+                //padrão: comando args[]
                 val messageSplit = message.split(" ")
 
+
                 if(messageSplit[0]=="request_vote"){
-                    // Reinicia processo de eleição
-                    cancelledElection = false
+
+                    if(states == "Leader"){
+                        sender.send("setLeader ${args[0]} ${term}")
+                    }
+
                     val comingTerm = Integer.parseInt(messageSplit[1])
 
                     if(myLeader != "" && comingTerm < term ){
+                        // Se eu recebi mensagem de alguem com o termo menor, então eu ignoro e espero meu
+                        // meu tempo estourar para iniciar uma eleição
                         continue
                     }
 
-                    // If you are a leader or candidate you cancel a new election
-                    if(term > comingTerm){
-                       // sender.send("vote ${messageSplit[2]}")
-                      //  myLeader = messageSplit[2]
-                       // term = comingTerm
-                        electionStart.cancelAndJoin()
-                        cancelledElection = true
-                        println("Bora ver ")
-                        continue
-                    }
+
 
 
                     if(states == "Candidate" && term <  comingTerm){
-                        // start a new timer to election
-                        //electionStart = getElectionJob()
                         electionStart.cancelAndJoin()
                         myLeader = messageSplit[2]
                         term = comingTerm
-                        //println("vote ${messageSplit[2]}")
+                        states ="Follower"
                         sender.send("vote ${messageSplit[2]}")
                         continue
                     }
                     if(states == "Candidate" && term ==  comingTerm){
-
-                       println("eaeeeeeeee")
                         continue
                     }
                     if(states == "Follower"){
                         if (term <  comingTerm){
-                            sender.send("vote ${messageSplit[2]}")
-                            //println("states == \"Follower\" new leader ${messageSplit[2]} ")
+                            sender.send("vote ${messageSplit[2]} eu sou o ${args[0]}")
+                            electionStart.cancelAndJoin()
                             term = comingTerm
                             myLeader = messageSplit[2]
-                            //println("vote ${messageSplit[2]}")
+
                             continue
                         }else{
-                            println("Pois num caiu aqui no menor")
                             updateTermAndStartElection()
                             continue
                         }
@@ -177,24 +177,32 @@ fun main(args: Array<String>) {
 
 
                 if(messageSplit[0]=="vote"){
-                    if(messageSplit[1]==args[0]){
+                    if(messageSplit[1]==args[0]){ // se o voto for para mim, BUS
                         votes+=1
-                        println("add a new vote = $votes")
+                        //println("add a new vote = $votes")
                         continue
                     }
                 }
+
+
                 if(messageSplit[0]=="heart-beat"){
                     myLeader = messageSplit[2]
-                    cancelledElection = true
                     electionStart.cancelAndJoin()
+                    states = "Follower"
+                    term = Integer.parseInt(messageSplit[1])
+                    votes = 0
                 }
-                if(cancelledElection == false) {
-                    electionStart = getElectionJob()
+
+                if(messageSplit[0] == "setLeader"){ // Quando eu peço voto a um lider e recebo setLeader
+                    electionStart.cancelAndJoin()
+                    myLeader = messageSplit[1]
+                    states = "Follower"
+                    votes = 0
+                    term = Integer.parseInt(messageSplit[2])
                 }
 
             }
         }
-
         listenToMessageJob.join()
         printjob.join()
     }
